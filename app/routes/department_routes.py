@@ -151,3 +151,64 @@ def assign_department_head(
     }
 
 
+from bson import json_util
+from fastapi.responses import JSONResponse
+import json
+
+@router.get("/fetchDepartments")
+def fetch_depertment_employees(depertment_name: str):
+    depertment = db["departments"].find_one({"name": depertment_name})
+
+    if not depertment:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    headList = list(
+        db["department_head"].find(
+            {"department_id": depertment["_id"]}
+        )
+    )
+
+    for head in headList:
+        head_data = db["employees"].find_one(
+            {"fullName": head.get("head_name")},
+            {"passportPhoto": 1, "_id": 0}
+        )
+
+        head["passportPhoto"] = (
+            head_data.get("passportPhoto")
+            if head_data
+            else None
+        )
+
+
+    empList = list(
+        db["department_employees"].find(
+            {"department_id": depertment["_id"]}
+        )
+    )
+
+    # passportPhoto
+    for emp in empList:
+        employee_data = db["employees"].find_one(
+            {"fullName": emp.get("name")},
+            {"passportPhoto": 1, "_id": 0}
+        )
+
+        emp["passportPhoto"] = (
+            employee_data.get("passportPhoto")
+            if employee_data
+            else None
+        )
+
+
+
+    return JSONResponse(
+        content=json.loads(
+            json_util.dumps(
+                {
+                    "heads": headList,
+                    "employees": empList
+                }
+            )
+        )
+    )
