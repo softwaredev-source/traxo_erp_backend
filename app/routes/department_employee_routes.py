@@ -12,6 +12,7 @@ from app.schemas.department_employee_schema import (
     DepartmentEmployeeUpdate
 )
 from app.utils.dependencies import get_current_user
+from app.utils.tenant_scope import assert_same_company
 
 router = APIRouter(prefix="/department-employees", tags=["Department Employees"])
 
@@ -36,6 +37,10 @@ def add_department_employee(
     if not department:
         raise HTTPException(status_code=404, detail="Department not found")
 
+    # STEP 2.5: Tenant check -- only allowed to add employees to a department
+    # that belongs to YOUR OWN company (Super Admin is exempt)
+    assert_same_company(current_user, department.get("company_id"))
+
     # STEP 3: Check if employee_code is already used (must be unique)
     existing = db["department_employees"].find_one({
         "employee_code": data.employee_code
@@ -59,6 +64,7 @@ def add_department_employee(
     # STEP 5: Build the employee document to store in MongoDB
     employee = {
         "department_id": dept_id,             # stored as ObjectId
+        "company_id": department.get("company_id"),  # inherited, for fast tenant checks
         "name": data.name,
         "email": data.email,
         "mobile_no": data.mobile_no,
@@ -96,6 +102,9 @@ def get_employees_by_department(
     department = db["departments"].find_one({"_id": dept_id})
     if not department:
         raise HTTPException(status_code=404, detail="Department not found")
+
+    # STEP 2.5: Tenant check
+    assert_same_company(current_user, department.get("company_id"))
 
     # STEP 3: Fetch all employees of this department
     employees = []
@@ -140,6 +149,9 @@ def get_employee_by_id(
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
 
+    # STEP 2.5: Tenant check
+    assert_same_company(current_user, emp.get("company_id"))
+
     # STEP 3: Return the employee data
     return {
         "_id": str(emp["_id"]),
@@ -174,6 +186,9 @@ def update_employee(
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
 
+    # STEP 2.5: Tenant check
+    assert_same_company(current_user, emp.get("company_id"))
+
     # STEP 3: Build update dict — only include fields that were sent
     # exclude_unset=True means: don't include fields the user didn't send
     update_data = data.model_dump(exclude_unset=True)
@@ -205,11 +220,16 @@ def delete_employee(
     except:
         raise HTTPException(status_code=400, detail="Invalid employee_id format")
 
-    # STEP 2: Delete the employee
-    result = db["department_employees"].delete_one({"_id": emp_id})
-
-    if result.deleted_count == 0:
+    # STEP 2: Check employee exists (needed for the tenant check before deleting)
+    emp = db["department_employees"].find_one({"_id": emp_id})
+    if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
+
+    # STEP 2.5: Tenant check
+    assert_same_company(current_user, emp.get("company_id"))
+
+    # STEP 3: Delete
+    db["department_employees"].delete_one({"_id": emp_id})
 
     return {"message": "Employee deleted successfully"}
 
@@ -233,6 +253,9 @@ def toggle_employee_status(
     emp = db["department_employees"].find_one({"_id": emp_id})
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
+
+    # STEP 2.5: Tenant check
+    assert_same_company(current_user, emp.get("company_id"))
 
     # STEP 3: Flip the is_active value
     current_status = emp.get("is_active", True)

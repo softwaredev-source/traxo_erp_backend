@@ -56,3 +56,7 @@ class CompanySchema(BaseModel):
     authorizedPerson: AuthorizedPerson
     bankDetails: BankDetails
     taxInformation: TaxInformation
+    admin_password: str
+    # ^ NEW: used to create the login for this company's Admin.
+    #   We reuse authorizedPerson.fullName + authorizedPerson.email
+    #   as that Admin's name/email -- no duplicate typing needed.

@@ -64,6 +64,7 @@ from app.routes.procurement_routes import router as procurement_router
 from app.api.requirement_routes import router as requirement_router
 from app.routes.product_routes import router as product_router
 from app.routes.department_employee_routes import router as dept_employee_router
+from app.routes.payroll_routes import router as payroll_router
 
 app = FastAPI()
 
@@ -89,6 +90,7 @@ app.include_router(procurement_router)
 app.include_router(requirement_router)
 app.include_router(product_router)
 app.include_router(dept_employee_router)     # ✅ NEW LINE
+app.include_router(payroll_router)           # ✅ PAYROLL POLICY
 
 @app.get("/")
 def home():

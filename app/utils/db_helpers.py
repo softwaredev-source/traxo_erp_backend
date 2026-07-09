@@ -2,6 +2,7 @@
 
 from app.models.user_model import user_entity
 from app.db.database import users_collection, company_collection
+from app.utils.id_generator import generate_company_id
 
 # Get user by email
 # def get_user_by_email(email):
@@ -32,5 +33,7 @@ def update_user(filter_query, update_data):
     )
 
 def create_company(data):
-    return company_collection.insert_one(data)
+    data["company_id"] = generate_company_id()
+    company_collection.insert_one(data)
+    return data["company_id"]
 

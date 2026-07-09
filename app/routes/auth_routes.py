@@ -107,13 +107,21 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
-from app.schemas.auth_schema import RegisterSchema, LoginSchema
+from fastapi import APIRouter, HTTPException, Depends
+from app.schemas.auth_schema import (
+    RegisterSchema,
+    LoginSchema,
+    SuperAdminBootstrapSchema,
+    CreateUserSchema,
+)
 from app.controllers.auth_controller import register_controller, login_controller
 from app.schemas.password_schema import ForgotPasswordSchema, ResetPasswordSchema
 from app.utils.db_helpers import get_user_by_email, get_user_by_token, update_user
 from app.utils.hash import hash_password
 from app.utils.token import generate_reset_token
+from app.utils.role_checker import require_super_admin
+from app.utils.dependencies import get_current_user
+from app.services.auth_service import create_super_admin_bootstrap, create_user_by_admin
 # from app.utils.email import send_reset_email   # keep off for now
 from app.db.database import db
 from app.db.database import modules_collection
@@ -122,13 +130,64 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
 @router.post("/register")
-def register(data: RegisterSchema):
+def register(data: RegisterSchema, current_user=Depends(require_super_admin)):
+    """
+    LEGACY endpoint, now Super-Admin-only. Company Admin/HR/Employee
+    accounts should be created via /company/onboard (for the first
+    Company Admin) or /auth/create-user (for everyone else) instead --
+    both of those properly attach a company_id and role.
+    """
     return register_controller(data)
 
 
 @router.post("/login")
 def login(data: LoginSchema):
     return login_controller(data)
+
+
+# =====================================================
+# SUPER ADMIN
+# =====================================================
+
+@router.post("/setup-super-admin")
+def setup_super_admin(data: SuperAdminBootstrapSchema):
+    """
+    ONE-TIME endpoint. Call this exactly once, right after deployment,
+    with the setup_key you put in your .env as SUPER_ADMIN_SETUP_KEY.
+    It refuses to run again once a Super Admin already exists.
+    """
+    try:
+        result = create_super_admin_bootstrap(data)
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("ERROR:", str(e))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@router.post("/create-user")
+def create_user(data: CreateUserSchema, current_user=Depends(require_super_admin)):
+    """
+    Only a logged-in Super Admin can call this. Used to create more
+    Super Admins, or a Company Admin / HR / Employee for a company.
+    """
+    try:
+        result = create_user_by_admin(data)
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("ERROR:", str(e))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/forgot-password")
 def forgot_password(data: ForgotPasswordSchema):
@@ -204,14 +263,24 @@ def reset_password(data: ResetPasswordSchema):
 #         raise HTTPException(status_code=400, detail=str(e))
 
 from bson import ObjectId
+from app.utils.tenant_scope import assert_same_company
 
 @router.get("/fetch-All-DepertmentHead-Onthe-basis-of-Depertment/{department_id}")
-def get_DepertmentHead(department_id: str):
+def get_DepertmentHead(department_id: str, current_user=Depends(get_current_user)):
 
     try:
+        dept_id = ObjectId(department_id)
+
+        department = db["departments"].find_one({"_id": dept_id}, {"_id": 0, "name": 1, "company_id": 1})
+        if not department:
+            raise HTTPException(status_code=404, detail="Department not found")
+
+        # Tenant check: only your own company's department heads
+        assert_same_company(current_user, department.get("company_id"))
+
         depertment_Head = list(
             db["department_head"].find(
-                {"department_id": ObjectId(department_id)},
+                {"department_id": dept_id},
                 {
                     "_id": 0,
                     "head_name": 1,
@@ -221,19 +290,13 @@ def get_DepertmentHead(department_id: str):
             )
         )
 
-        # and i want to send department name also in response so i will do one more query to get department name
-        department = db["departments"].find_one(
-            {"_id": ObjectId(department_id)},
-            {"_id": 0, "name": 1}
-        )
-        
-
-        # Combine department name with department head information
         for head in depertment_Head:
             head["department_name"] = department.get("name", "Unknown")
 
         return depertment_Head
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -246,9 +309,17 @@ def get_DepertmentHead(department_id: str):
 from app.schemas.module_schema import ModuleCreate
 
 @router.post("/create-module")
-def create_module(data: ModuleCreate):
+def create_module(data: ModuleCreate, current_user=Depends(get_current_user)):
 
     try:
+        dept_id = ObjectId(data.department_id)
+
+        department = db["departments"].find_one({"_id": dept_id}, {"company_id": 1})
+        if not department:
+            raise HTTPException(status_code=404, detail="Department not found")
+
+        # Tenant check: can only create a module under your own company's department
+        assert_same_company(current_user, department.get("company_id"))
 
         module_data = {
 
@@ -256,7 +327,9 @@ def create_module(data: ModuleCreate):
 
             "module_url": data.module_url,
 
-            "department_id": ObjectId(data.department_id),
+            "department_id": dept_id,
+
+            "company_id": department.get("company_id"),
 
             "created_at": datetime.utcnow()
         }
@@ -268,6 +341,8 @@ def create_module(data: ModuleCreate):
             "module_id": str(result.inserted_id)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
@@ -276,31 +351,13 @@ def create_module(data: ModuleCreate):
 # work on Admin Add Employee under department head
 # ----------------------------------------------
 
-@router.post("/add-employee-under-department-head")
-def add_employee_under_department_head(employee_data: dict):
-    try:
-        # Validate input data
-        required_fields = ["name", "email", "mobile_no", "department_id"]
-        for field in required_fields:
-            if field not in employee_data:
-                raise HTTPException(status_code=400, detail=f"Missing field: {field}")
-
-        # Create employee record
-        employee_record = {
-            "name": employee_data["name"],
-            "email": employee_data["email"],
-            "mobile_no": employee_data["mobile_no"],
-            "department_id": ObjectId(employee_data["department_id"]),
-            "created_at": datetime.utcnow()
-        }
-
-        # Insert into database
-        result = db["employees"].insert_one(employee_record)
-
-        return {
-            "message": "Employee added successfully",
-            "employee_id": str(result.inserted_id)
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+# ----------------------------------------------
+# RETIRED: this used to add employees into a separate "employees"
+# collection with no login check and no company_id at all.
+# Use POST /department-employees/add instead -- it's protected,
+# tenant-scoped, and writes to the correct "department_employees"
+# collection that the rest of the app actually reads from.
+# ----------------------------------------------
+# @router.post("/add-employee-under-department-head")
+# def add_employee_under_department_head(employee_data: dict):
+#     ...

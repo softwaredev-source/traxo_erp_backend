@@ -6,6 +6,7 @@ load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME")
 JWT_SECRET = os.getenv("JWT_SECRET")
+SUPER_ADMIN_SETUP_KEY = os.getenv("SUPER_ADMIN_SETUP_KEY", "change-this-key")
 
 # MAIL_FROM = os.getenv("MAIL_FROM")
 # MAIL_PORT = int(os.getenv("MAIL_PORT", 587))

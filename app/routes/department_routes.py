@@ -5,6 +5,7 @@ from app.schemas.department_schema import DepartmentCreate, DepartmentByBranch
 from app.utils.dependencies import get_current_user   # your auth middleware
 from app.schemas.department_schema import UpdateDepartmentHead
 from app.db.database import depertment_Head_collection
+from app.utils.tenant_scope import assert_same_company
 
 router = APIRouter(prefix="/departments", tags=["Departments"])
 
@@ -20,9 +21,18 @@ def create_department(
     except:
         raise HTTPException(status_code=400, detail="Invalid branch_id")
 
+    branch = db["branches"].find_one({"_id": branch_id})
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    # A department can only be created under a branch belonging to YOUR company
+    # (Super Admin is exempt and can create under any branch).
+    assert_same_company(current_user, branch.get("company_id"))
+
     department = {
         "name": data.name,
-        "branch_id": branch_id
+        "branch_id": branch_id,
+        "company_id": branch.get("company_id"),   # inherited, used for fast tenant checks later
     }
 
     result = db["departments"].insert_one(department)
@@ -43,6 +53,13 @@ def get_departments(
         branch_id = ObjectId(data.branch_id)
     except:
         raise HTTPException(status_code=400, detail="Invalid branch_id")
+
+    branch = db["branches"].find_one({"_id": branch_id})
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    # Only allowed to browse departments of a branch that belongs to YOUR company
+    assert_same_company(current_user, branch.get("company_id"))
 
     departments = []
 
@@ -67,25 +84,22 @@ def delete_department(
     except:
         raise HTTPException(status_code=400, detail="Invalid ID")
 
-    result = db["departments"].delete_one({"_id": dept_id})
-
-    if result.deleted_count == 0:
+    department = db["departments"].find_one({"_id": dept_id})
+    if not department:
         raise HTTPException(status_code=404, detail="Department not found")
 
+    assert_same_company(current_user, department.get("company_id"))
+
+    db["departments"].delete_one({"_id": dept_id})
+
     return {"message": "Deleted successfully"}
-
-
-
-
-
-
-
 
 
 @router.put("/assign-head/{department_id}")
 def assign_department_head(
     department_id: str,
-    data: UpdateDepartmentHead
+    data: UpdateDepartmentHead,
+    current_user=Depends(get_current_user)
 ):
 
     try:
@@ -109,16 +123,8 @@ def assign_department_head(
             detail="Department not found"
         )
 
-    # check user exists
-    # user = db["adminUsers"].find_one({
-    #     "_id": head_id
-    # })
-
-    # if not user:
-    #     raise HTTPException(
-    #         status_code=404,
-    #         detail="User not found"
-    #     )
+    # Only allowed to assign a head for a department in YOUR OWN company
+    assert_same_company(current_user, department.get("company_id"))
 
     # update head_id
     db["departments"].update_one(
@@ -139,7 +145,8 @@ def assign_department_head(
                 "head_id": head_id,
                 "head_name": data.head_name,
                 "head_email": data.head_email,
-                "head_mobileno": data.head_mobileno
+                "head_mobileno": data.head_mobileno,
+                "company_id": department.get("company_id"),   # inherited, for tenant checks elsewhere
             }
         },
         upsert=True
@@ -149,66 +156,3 @@ def assign_department_head(
     return {
         "message": "Department head assigned successfully"
     }
-
-
-from bson import json_util
-from fastapi.responses import JSONResponse
-import json
-
-@router.get("/fetchDepartments")
-def fetch_depertment_employees(depertment_name: str):
-    depertment = db["departments"].find_one({"name": depertment_name})
-
-    if not depertment:
-        raise HTTPException(status_code=404, detail="Department not found")
-
-    headList = list(
-        db["department_head"].find(
-            {"department_id": depertment["_id"]}
-        )
-    )
-
-    for head in headList:
-        head_data = db["employees"].find_one(
-            {"fullName": head.get("head_name")},
-            {"passportPhoto": 1, "_id": 0}
-        )
-
-        head["passportPhoto"] = (
-            head_data.get("passportPhoto")
-            if head_data
-            else None
-        )
-
-
-    empList = list(
-        db["department_employees"].find(
-            {"department_id": depertment["_id"]}
-        )
-    )
-
-    # passportPhoto
-    for emp in empList:
-        employee_data = db["employees"].find_one(
-            {"fullName": emp.get("name")},
-            {"passportPhoto": 1, "_id": 0}
-        )
-
-        emp["passportPhoto"] = (
-            employee_data.get("passportPhoto")
-            if employee_data
-            else None
-        )
-
-
-
-    return JSONResponse(
-        content=json.loads(
-            json_util.dumps(
-                {
-                    "heads": headList,
-                    "employees": empList
-                }
-            )
-        )
-    )
