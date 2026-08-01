@@ -50,3 +50,5 @@ def get_companies_controller():
         return {"message": "No companies found"}
 
     return {"companies": companies}
+
+    
